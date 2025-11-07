@@ -94,9 +94,7 @@ function loadIndexKey() {
   return key;
 }
 
-// New: makeLookupKey (HMAC-SHA256 to base64, 44 chars)
 // Use for email_index / username_index
-
 export function makeLookupKey(value) {
   if (!value) return null;
 
