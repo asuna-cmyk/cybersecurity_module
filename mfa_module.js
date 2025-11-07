@@ -1,113 +1,96 @@
-import crypto from "crypto";                  // Used to generate random 6-digit code
-import dotenv from "dotenv";                  // Loads environment variables from .env
-import nodemailer from "nodemailer";          // Used to send email codes via Gmail
-dotenv.config();                              // Initialize dotenv so process.env works
+import dotenv from "dotenv";
+import nodemailer from "nodemailer";
+dotenv.config();
 
-// Configuration values
-const MFA_CODE_TTL_MS = 5 * 60 * 1000;        // Code expires after 5 minutes
-const MFA_CODE_LENGTH = 6;                    // Length of the numeric code
-const FROM_EMAIL = process.env.FROM_EMAIL;    // Sender email (system email)
-const EMAIL_APP_PASS = process.env.EMAIL_APP_PASS; // App password for Gmail/SMTP
+const MFA_CODE_TTL_MS = Number(process.env.MFA_CODE_TTL_MS || 5 * 60 * 1000); // 5 min
+const MFA_CODE_LENGTH = Number(process.env.MFA_CODE_LENGTH || 6);             // 6 digits
+const FROM_EMAIL = process.env.FROM_EMAIL;
+const EMAIL_APP_PASS = process.env.EMAIL_APP_PASS;
 
-// In-memory storage for active MFA challenges
-// Format: Map<userId, { code, expiresAt, address }>
-const challenges = new Map();                 // Keeps track of who has active MFA codes
+// In-memory store: Map<userId, { code, expiresAt, email }>
+const challenges = new Map();
 
-// Generate random 6-digit code
-function makeCode() {                         // Function to make numeric code
-  let code = "";                              // Start with an empty string
-  for (let i = 0; i < MFA_CODE_LENGTH; i++) { // Repeat 6 times
-    code += Math.floor(Math.random() * 10);   // Add a random number 0–9 each time
+// Generate numeric 6-digit OTP
+function makeCode() {
+  let code = "";
+  for (let i = 0; i < MFA_CODE_LENGTH; i++) {
+    code += Math.floor(Math.random() * 10);
   }
-  return code;                                // Return the final 6-digit code
+  return code;
 }
 
-// Deliver the MFA code by email only
-async function deliverCode(address, code) {   // Send code to user's email
+// Mask email for UI display
+export function maskEmail(email) {
+  if (!email) return "";
+  const [name, domain] = email.split("@");
+  const left = name.slice(0, 2);
+  const right = name.slice(-1);
+  return `${left}***${right}@${domain}`;
+}
+
+// Send OTP email
+async function sendEmail(email, code) {
   try {
-    // Create a Nodemailer email transporter using Gmail service
     const transporter = nodemailer.createTransport({
-      service: "gmail",                       // Use Gmail service
-      auth: {                                 // Gmail login credentials
-        user: FROM_EMAIL,                     // Sender email
-        pass: EMAIL_APP_PASS                  // Gmail App Password (not normal password)
-      }
+      service: "gmail",
+      auth: { user: FROM_EMAIL, pass: EMAIL_APP_PASS }
     });
 
-    // Prepare email content
-    const mailOptions = {
-      from: FROM_EMAIL,                       // From address
-      to: address,                            // Recipient email
-      subject: "Smart Plant Admin/Researcher Verification Code", // Subject line
-      text: `Your 6-digit code is: ${code}\nThis code will expire in 5 minutes.` // Message body
-    };
+    await transporter.sendMail({
+      from: FROM_EMAIL,
+      to: email,
+      subject: `Your SmartPlant login code: ${code}`,
+      text: `Your login verification code is: ${code}\nThis code expires in 5 minutes.`
+    });
 
-    // Send the email
-    await transporter.sendMail(mailOptions);
-    console.log(`[MFA] Email sent to ${address}`); // Log success
-    return true;                              // Return success
+    return true;
   } catch (err) {
-    console.error("[MFA] Email sending failed:", err.message); // Log any error
-    return false;                             // Return failure
+    console.error("[MFA] Email send failed:", err.message);
+    return false;
   }
 }
 
-// Start an MFA challenge for privileged roles (admin or researcher only)
-export async function startMfaForPrivileged(userId, role, address = "admin@local") {
-  if (!userId) return { ok: false, message: "userId is required" };  // Check input
-  const r = String(role || "").toLowerCase();                    // Normalize role text
-  if (r !== "admin" && r !== "researcher") {                     // Allow only admin or researcher
-    return { ok: false, status: 403, message: "Only admin or researcher can use MFA" };
-  }
+ // Start MFA (generate + email OTP)
+export async function startMfa(userId, email) {
+  if (!userId || !email) return { ok: false, message: "userId and email are required" };
 
-  const code = makeCode();                                       // Generate 6-digit code
-  const expiresAt = Date.now() + MFA_CODE_TTL_MS;                // Calculate expiration time
+  const code = makeCode();
+  const expiresAt = Date.now() + MFA_CODE_TTL_MS;
 
-  const delivered = await deliverCode(address, code);             // Send code via email
-  if (!delivered) return { ok: false, message: "Could not send MFA code" }; // Stop if email failed
+  const delivered = await sendEmail(email, code);
+  if (!delivered) return { ok: false, message: "Failed to send MFA code" };
 
-  challenges.set(String(userId), { code, expiresAt, address });   // Save challenge details
-  return { ok: true, message: "MFA code sent to your email" };    // Return success
+  challenges.set(String(userId), { code, expiresAt, email });
+  return { ok: true, to: maskEmail(email), ttl_ms: MFA_CODE_TTL_MS };
 }
 
-// Verify MFA code for privileged roles
-export function verifyMfaForPrivileged(userId, role, code) {
-  if (!userId || !code) return { ok: false, message: "userId and code are required" }; // Validate input
-  const r = String(role || "").toLowerCase();                     // Normalize role name
-  if (r !== "admin" && r !== "researcher") {                      // Block normal users
-    return { ok: false, status: 403, message: "Only admin or researcher can verify MFA" };
+// Verify MFA code
+export function verifyMfa(userId, code) {
+  if (!userId || !code) return { ok: false, message: "userId and code are required" };
+
+  const entry = challenges.get(String(userId));
+  if (!entry) return { ok: false, message: "No MFA was requested" };
+
+  if (Date.now() > entry.expiresAt) {
+    challenges.delete(String(userId));
+    return { ok: false, message: "MFA code expired" };
   }
 
-  const entry = challenges.get(String(userId));                   // Get stored challenge
-  if (!entry) return { ok: false, message: "No MFA code was requested" }; // No code found
-
-  if (Date.now() > entry.expiresAt) {                             // If code expired
-    challenges.delete(String(userId));                            // Remove expired record
-    return { ok: false, message: "MFA code has expired" };        // Inform user
+  if (String(code).trim() !== entry.code) {
+    return { ok: false, message: "Incorrect code" };
   }
 
-  if (String(code).trim() !== entry.code) {                       // Compare code
-    return { ok: false, message: "MFA code is incorrect" };       // Wrong code
-  }
-
-  challenges.delete(String(userId));                              // Delete after success
-  return { ok: true, message: "MFA check passed" };               // Return success message
+  challenges.delete(String(userId));
+  return { ok: true };
 }
 
-// Require MFA for privileged routes (admin/researcher only)
-// If user is public = block. If not verified = ask to verify MFA.
-export function requirePrivilegedMfa(req, res, next) {
-  const role = (req.role || "").toLowerCase();                    // Read user role
-  if (role !== "admin" && role !== "researcher") {                // Public user check
-    res.status(403).json({ message: "Privileged users only (admin or researcher)" }); // Block access
-    return;                                                       // Stop request
+// Middleware: block access if MFA not completed
+export function requireMfa(req, res, next) {
+  if (!req.user?.id && !req.user?.sub) {
+    return res.status(401).json({ message: "Login required" });
   }
-
-  // For admin/researcher → check MFA session flag
-  if (!req.session || !req.session.mfaVerified) {                 // Verify session
-    res.status(401).json({ message: "Please complete MFA first" }); // Ask to verify
-    return;                                                       // Stop request
+  if (!req.session?.mfaVerified) {
+    return res.status(401).json({ message: "MFA required" });
   }
-
-  next();                                                         // Allow access
+  next();
 }

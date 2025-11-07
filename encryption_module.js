@@ -1,13 +1,16 @@
-import crypto from "crypto";        // Node built-in library for encryption
+import crypto from "crypto";        // Node built-in library for encryption/HMAC
 import dotenv from "dotenv";        // To read values from .env file
+import bcrypt from "bcryptjs";      // For password hashing/verification
 dotenv.config();                    // Load environment variables into process.env
 
 // Encryption settings
 const ALGO = "aes-256-gcm";         // AES encryption with GCM mode
 const KEY_LEN = 32;                 // 32 bytes = 256-bit key
 const IV_LEN = 12;                  // 12 bytes IV
+const BCRYPT_ROUNDS = Number(process.env.BCRYPT_COST || 12);
 
-// Load secret key from .env file
+// loadKey
+
 function loadKey() {
   const b64 = process.env.DATA_KEY_B64;      // Read base64-encoded key from .env
   if (!b64) {
@@ -24,7 +27,7 @@ function loadKey() {
   return key;                               // Return valid key for use
 }
 
-// Encrypt text data (used for species details or observation location)
+// encryptText
 export function encryptText(text) {
   if (!text) {                              // Make sure text is not empty
     console.log("No text provided to encrypt.");
@@ -52,7 +55,7 @@ export function encryptText(text) {
   };
 }
 
-// Decrypt text data (used when reading from database)
+// decryptText
 export function decryptText(bundle) {
   if (!bundle || !bundle.iv || !bundle.ct || !bundle.tag) {
     console.log("Invalid encrypted bundle.");
@@ -77,37 +80,54 @@ export function decryptText(bundle) {
   return decrypted.toString("utf8");         // Return readable text
 }
 
-// Storing/retrieving JSON in database
-export function bundleToDB(obj) {            // Object → JSON string
+function loadIndexKey() {
+  const b64 = process.env.INDEX_KEY_B64;
+  if (!b64) {
+    console.log("Missing INDEX_KEY_B64 in .env file.");
+    return null;
+  }
+  const key = Buffer.from(b64, "base64");
+  if (key.length !== KEY_LEN) {
+    console.log("INDEX_KEY_B64 must decode to 32 bytes.");
+    return null;
+  }
+  return key;
+}
+
+// New: makeLookupKey (HMAC-SHA256 to base64, 44 chars)
+// Use for email_index / username_index
+
+export function makeLookupKey(value) {
+  if (!value) return null;
+
+  const indexKey = loadIndexKey();
+  if (!indexKey) return null;
+
+  const clean = value.trim().toLowerCase();
+  return crypto.createHmac("sha256", indexKey).update(clean, "utf8").digest("base64");
+}
+
+// Password helpers (bcrypt)
+export async function hashPassword(password) {
+  if (!password) throw new Error("Password required");
+  return bcrypt.hash(password, BCRYPT_ROUNDS);
+}
+
+export async function checkPassword(password, savedHash) {
+  if (!password || !savedHash) return false;
+  return bcrypt.compare(password, savedHash);
+}
+
+// JSON helpers for DB storage
+export function saveBundle(obj) {   // Object to JSON string
   return JSON.stringify(obj);
 }
 
-export function bundleFromDB(str) {          // JSON string → Object
+export function loadBundle(str) {   // JSON string to Object
   if (!str) return null;
   try {
     return JSON.parse(str);
   } catch {
     return null;
   }
-}
-
-// Test
-if (process.argv[1].endsWith("encryption_module.js")) {
-  const sampleDetails = "Endangered: Found only in protected forest.";
-  const sampleCoords = JSON.stringify({ lat: 1.234, lng: 110.678 });
-
-  console.log("Original details:", sampleDetails);
-  console.log("Original location:", sampleCoords);
-
-  const encDetails = encryptText(sampleDetails);
-  const encCoords = encryptText(sampleCoords);
-
-  console.log("Encrypted details:", encDetails);
-  console.log("Encrypted location:", encCoords);
-
-  const decDetails = decryptText(encDetails);
-  const decCoords = decryptText(encCoords);
-
-  console.log("Decrypted details:", decDetails);
-  console.log("Decrypted location:", decCoords);
 }
