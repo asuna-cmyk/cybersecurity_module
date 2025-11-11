@@ -4,7 +4,7 @@ import {
   verifyLoginCode,
   getMyProfile,
   signOut,
-} from "../service/auth_service.js";
+} from "./service/auth_service.js";
 
 // register
 export async function registerUser(req, res) {

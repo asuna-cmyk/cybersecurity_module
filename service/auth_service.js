@@ -1,4 +1,4 @@
-import db from "../config/db.js";
+import db from "./config/db.js";
 import {
   makeLookupKey,     // HMAC index for fast search (email)
   encryptText,       // AES-GCM encrypt
@@ -7,8 +7,8 @@ import {
   loadBundle,        // JSON -> object
   hashPassword,      // bcrypt hash
   checkPassword,     // bcrypt compare
-} from "../modules/encryption_module.js";
-import { startMfa, verifyMfa } from "../modules/mfa_module.js";
+} from "./modules/encryption_module.js";
+import { startMfa, verifyMfa } from "./modules/mfa_module.js";
 
 // Create Account
 export async function createAccount({ email, username, password, role_id }) {
